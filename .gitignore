@@ -1,0 +1,10 @@
+output
+.DS_Store
+build/
+.cache/
+gyroflip
+CMakeCache.txt
+cmake_install.cmake
+CMakeFiles
+Makefile
+particles
