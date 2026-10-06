@@ -8,8 +8,8 @@
 
 #define FPS 60
 // Window setup
-#define X 1920
-#define Y 1080
+#define X 1280
+#define Y 720
 
 #define PARTICLE_TAIL_LENGTH 5 // 0 <= ... <= 255
 #define PARTICLE_RADIUS 5.0f
@@ -28,7 +28,13 @@ typedef struct {
     Vector2 tail[PARTICLE_TAIL_LENGTH];
 } Particle;
 
-Particle particles[PARTICLE_MAX];
+typedef struct {
+    bool enabled;
+    Rectangle rect;
+} Block;
+
+Particle particles[PARTICLE_MAX] = { 0 };
+Block blocks[BLOCK_MAX] = { 0 };
 
 Vector2 getRandomVector2(int x_min, int x_max, int y_min, int y_max)
 {
@@ -54,25 +60,48 @@ void drawParticle(Particle* p)
     DrawCircleV(p->pos, PARTICLE_RADIUS, p->color);
 }
 
-void tickParticle(Particle* p)
+bool collidesWith(Particle* p, Block* b)
 {
-    p->tail[0] = p->pos;
-    p->pos = Vector2Add(p->pos, p->vel);
-    p->vel = Vector2Add(p->vel, PARTICLE_GRAVITY_VECTOR);
-    for (int8_t i = (PARTICLE_TAIL_LENGTH - 1); i > 0; i--) {
-        p->tail[i] = p->tail[i - 1];
+    return CheckCollisionPointRec(p->pos, b->rect);
+}
+
+void handleCollision(Particle* p)
+{
+    Block* b;
+    p->pos.x += p->vel.x;
+    for (size_t i = 0; i < BLOCK_MAX; i++) {
+        b = &blocks[i];
+        if (!b->enabled)
+            continue;
+        if (collidesWith(p, b)) {
+            p->pos.x -= p->vel.x;
+            p->vel.x *= -1;
+            break;
+        }
+    }
+
+    p->pos.y += p->vel.y;
+    for (size_t i = 0; i < BLOCK_MAX; i++) {
+        b = &blocks[i];
+        if (!b->enabled)
+            continue;
+        if (collidesWith(p, b)) {
+            p->pos.y -= p->vel.y;
+            p->vel.y *= -1;
+            break;
+        }
     }
 }
 
-void tick(void)
+void tickParticle(Particle* p)
 {
-    Particle* p;
-    for (size_t i = 0; i < PARTICLE_MAX; i++) {
-        p = &particles[i];
-        if (!p->enabled)
-            continue;
-        tickParticle(p);
-        drawParticle(p);
+    p->tail[0] = p->pos;
+
+    handleCollision(p);
+
+    p->vel = Vector2Add(p->vel, PARTICLE_GRAVITY_VECTOR);
+    for (int8_t i = (PARTICLE_TAIL_LENGTH - 1); i > 0; i--) {
+        p->tail[i] = p->tail[i - 1];
     }
 }
 
@@ -81,6 +110,14 @@ Particle* getFreeParticle()
     for (size_t i = 0; i < PARTICLE_MAX; i++)
         if (!particles[i].enabled)
             return &particles[i];
+    return NULL;
+}
+
+Block* getFreeBlock()
+{
+    for (size_t i = 0; i < BLOCK_MAX; i++)
+        if (!blocks[i].enabled)
+            return &blocks[i];
     return NULL;
 }
 
@@ -96,6 +133,11 @@ Color getRandomColor(Color* original, double diversion)
     };
 }
 
+void drawBlock(Block* b)
+{
+    DrawRectangleRec(b->rect, BLACK);
+}
+
 void handleMouseClick()
 {
     Vector2 pos = GetMousePosition();
@@ -107,6 +149,31 @@ void handleMouseClick()
     initParticle(p, pos, getRandomVector2(-PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY, -PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY), getRandomColor(NULL, 128));
 }
 
+void tick(void)
+{
+    Particle* p;
+    for (size_t i = 0; i < PARTICLE_MAX; i++) {
+        p = &particles[i];
+        if (!p->enabled)
+            continue;
+        tickParticle(p);
+        drawParticle(p);
+    }
+
+    Block* b;
+    for (size_t i = 0; i < BLOCK_MAX; i++) {
+        b = &blocks[i];
+        if (!b->enabled)
+            continue;
+        drawBlock(b);
+    }
+}
+
+Rectangle rectangleFromVectors(Vector2 position, Vector2 size)
+{
+    return (Rectangle) { position.x, position.y, size.x, size.y };
+}
+
 int main(void)
 {
     SetTraceLogLevel(LOG_WARNING);
@@ -115,9 +182,31 @@ int main(void)
     SetRandomSeed(time(NULL));
 
     Vector2 blockStartPos;
+    Vector2 blockCurrentPos;
+    bool drawingBlock = false;
     while (!WindowShouldClose()) {
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            if (drawingBlock)
+                drawingBlock = false;
             handleMouseClick();
+        }
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            blockStartPos = GetMousePosition();
+            drawingBlock = true;
+        }
+
+        if (drawingBlock) {
+            blockCurrentPos = GetMousePosition();
+            DrawRectangleRec(rectangleFromVectors(blockStartPos, Vector2Subtract(GetMousePosition(), blockStartPos)), BLACK);
+        }
+
+        if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) {
+            if (drawingBlock) {
+                *getFreeBlock() = (Block) { true, rectangleFromVectors(blockStartPos, Vector2Subtract(blockCurrentPos, blockStartPos)) };
+                drawingBlock = false;
+            }
+        }
 
         BeginDrawing();
         ClearBackground(GRAY);
