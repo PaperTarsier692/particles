@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <raylib.h>
 #include <raymath.h>
 #include <stdbool.h>
@@ -17,6 +18,10 @@
 #define PARTICLE_GRAVITY_VECTOR ((Vector2) { 0.0f, 0.5f })
 #define PARTICLE_MAX 10000
 #define PARTICLE_INITIAL_VELOCITY 10
+#define PARTICLE_AIR_RESISTANCE 0.99f
+#define PARTICLE_BOUNCE_LOSS 0.8f
+#define PARTICLE_GLIDE_RESISTANCE 0.999999f
+#define PARTICLE_MIN_VELOCITY 0.5f
 
 #define BLOCK_MAX 1000
 
@@ -33,6 +38,7 @@ typedef struct {
     Rectangle rect;
 } Block;
 
+size_t particleCount;
 Particle particles[PARTICLE_MAX] = { 0 };
 Block blocks[BLOCK_MAX] = { 0 };
 
@@ -60,9 +66,14 @@ void drawParticle(Particle* p)
     DrawCircleV(p->pos, PARTICLE_RADIUS, p->color);
 }
 
-bool collidesWith(Particle* p, Block* b)
+bool particleCollidesWithBlock(Particle* p, Block* b)
 {
     return CheckCollisionPointRec(p->pos, b->rect);
+}
+
+bool pointCollidesWithBlock(Vector2* point, Block* b)
+{
+    return CheckCollisionPointRec(*point, b->rect);
 }
 
 void handleCollision(Particle* p)
@@ -73,9 +84,10 @@ void handleCollision(Particle* p)
         b = &blocks[i];
         if (!b->enabled)
             continue;
-        if (collidesWith(p, b)) {
+        if (particleCollidesWithBlock(p, b)) {
             p->pos.x -= p->vel.x;
             p->vel.x *= -1;
+            p->vel.x *= PARTICLE_BOUNCE_LOSS;
             break;
         }
     }
@@ -85,12 +97,18 @@ void handleCollision(Particle* p)
         b = &blocks[i];
         if (!b->enabled)
             continue;
-        if (collidesWith(p, b)) {
+        if (particleCollidesWithBlock(p, b)) {
             p->pos.y -= p->vel.y;
+            if (fabsf(p->vel.y) < 0.5)
+                p->vel.y *= PARTICLE_GLIDE_RESISTANCE;
+            else
+                p->vel.y *= PARTICLE_BOUNCE_LOSS;
             p->vel.y *= -1;
             break;
         }
     }
+    if (fabs(p->vel.x) < PARTICLE_MIN_VELOCITY && fabs(p->vel.y) < PARTICLE_MIN_VELOCITY)
+        p->enabled = false;
 }
 
 void tickParticle(Particle* p)
@@ -100,6 +118,8 @@ void tickParticle(Particle* p)
     handleCollision(p);
 
     p->vel = Vector2Add(p->vel, PARTICLE_GRAVITY_VECTOR);
+    p->vel.x *= PARTICLE_AIR_RESISTANCE;
+    p->vel.y *= PARTICLE_AIR_RESISTANCE;
     for (int8_t i = (PARTICLE_TAIL_LENGTH - 1); i > 0; i--) {
         p->tail[i] = p->tail[i - 1];
     }
@@ -141,6 +161,12 @@ void drawBlock(Block* b)
 void handleMouseClick()
 {
     Vector2 pos = GetMousePosition();
+    Block* b;
+    for (size_t i = 0; i < BLOCK_MAX; i++) {
+        b = &blocks[i];
+        if (pointCollidesWithBlock(&pos, b))
+            return;
+    }
     Particle* p = getFreeParticle();
     if (p == NULL) {
         printf("Out of particles\n");
@@ -151,6 +177,7 @@ void handleMouseClick()
 
 void tick(void)
 {
+    particleCount = 0;
     Particle* p;
     for (size_t i = 0; i < PARTICLE_MAX; i++) {
         p = &particles[i];
@@ -158,6 +185,7 @@ void tick(void)
             continue;
         tickParticle(p);
         drawParticle(p);
+        particleCount++;
     }
 
     Block* b;
@@ -168,9 +196,19 @@ void tick(void)
         drawBlock(b);
     }
 }
-
 Rectangle rectangleFromVectors(Vector2 position, Vector2 size)
 {
+    // ensure the size is always positive
+    if (size.x < 0) {
+        position.x += size.x;
+        size.x = -size.x;
+    }
+
+    if (size.y < 0) {
+        position.y += size.y;
+        size.y = -size.y;
+    }
+
     return (Rectangle) { position.x, position.y, size.x, size.y };
 }
 
@@ -184,6 +222,8 @@ int main(void)
     Vector2 blockStartPos;
     Vector2 blockCurrentPos;
     bool drawingBlock = false;
+    char particleCountBuffer[20];
+
     while (!WindowShouldClose()) {
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             if (drawingBlock)
@@ -208,10 +248,17 @@ int main(void)
             }
         }
 
+        if (IsKeyPressed(KEY_C)) {
+            for (size_t i = 0; i < PARTICLE_MAX; i++)
+                particles[i].enabled = false;
+        }
+
         BeginDrawing();
         ClearBackground(GRAY);
         tick();
         DrawFPS(10, 10);
+        snprintf(particleCountBuffer, sizeof(particleCountBuffer), "%" PRIuMAX, particleCount);
+        DrawText(particleCountBuffer, 10, 40, 20, DARKGREEN);
         EndDrawing();
     }
     CloseWindow();
