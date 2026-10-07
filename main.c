@@ -104,11 +104,11 @@ void handleCollision(Particle* p)
             else
                 p->vel.y *= PARTICLE_BOUNCE_LOSS;
             p->vel.y *= -1;
+            if (fabs(p->vel.x) < PARTICLE_MIN_VELOCITY && fabs(p->vel.y) < PARTICLE_MIN_VELOCITY)
+                p->enabled = false;
             break;
         }
     }
-    if (fabs(p->vel.x) < PARTICLE_MIN_VELOCITY && fabs(p->vel.y) < PARTICLE_MIN_VELOCITY)
-        p->enabled = false;
 }
 
 void tickParticle(Particle* p)
