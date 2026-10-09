@@ -11,7 +11,7 @@
 #include <emscripten/emscripten.h>
 #endif
 
-#define FPS 40
+#define FPS 60
 // Window setup
 #define X 1280
 #define Y 720
@@ -336,7 +336,7 @@ void UpdateDrawFrame(void)
     snprintf(particleCountBuffer, sizeof(particleCountBuffer), "%zu", particleCount);
     DrawText(particleCountBuffer, 10, 40, 20, DARKGREEN);
     if (drawingBlock)
-        DrawText(BLOCK_NAMES[blockType], 10, 80, 20, DARKGREEN);
+        DrawText(BLOCK_NAMES[blockType], 10, Y - 10, 20, DARKGREEN);
     EndDrawing();
     spawnerTimer++;
 }
