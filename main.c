@@ -7,7 +7,11 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define FPS 60
+#if defined(PLATFORM_WEB)
+#include <emscripten/emscripten.h>
+#endif
+
+#define FPS 40
 // Window setup
 #define X 1280
 #define Y 720
@@ -24,6 +28,10 @@
 #define PARTICLE_MIN_VELOCITY 0.5f
 
 #define BLOCK_MAX 1000
+#define BLOCK_TYPE_COUNT 6
+#define SLIDER_RESISTANCE 1.1f
+#define BOUNCER_RESISTANCE 1.5f
+#define SPAWNER_FREQUENCY 10
 
 typedef struct {
     bool enabled; // Wether or not the particle exists
@@ -34,13 +42,31 @@ typedef struct {
 } Particle;
 
 typedef struct {
-    bool enabled;
+    uint8_t type; // 0 = disabled; 1 = spawner; 2 = block; 3 = bouncer; 4 = slider; 5 = despawner
     Rectangle rect;
 } Block;
 
+const char* BLOCK_NAMES[BLOCK_TYPE_COUNT] = {
+    "Disabled",
+    "Spawner",
+    "Block",
+    "Bouncer",
+    "Slider",
+    "Despawner"
+};
+
+const Color BLOCK_COLORS[BLOCK_TYPE_COUNT] = { BLACK, BLUE, BLACK, YELLOW, GREEN, RED };
+
+size_t spawnerTimer = 0;
 size_t particleCount;
 Particle particles[PARTICLE_MAX] = { 0 };
 Block blocks[BLOCK_MAX] = { 0 };
+
+Vector2 blockStartPos;
+Vector2 blockCurrentPos;
+bool drawingBlock = false;
+char particleCountBuffer[20];
+uint8_t blockType = 1;
 
 Vector2 getRandomVector2(int x_min, int x_max, int y_min, int y_max)
 {
@@ -76,36 +102,64 @@ bool pointCollidesWithBlock(Vector2* point, Block* b)
     return CheckCollisionPointRec(*point, b->rect);
 }
 
+bool outOfBounds(Vector2 pos)
+{
+    return pos.x < 0 || pos.x > X || pos.y < 0 || pos.y > Y;
+}
+
 void handleCollision(Particle* p)
 {
     Block* b;
     p->pos.x += p->vel.x;
     for (size_t i = 0; i < BLOCK_MAX; i++) {
         b = &blocks[i];
-        if (!b->enabled)
+        if (b->type < 2)
             continue;
         if (particleCollidesWithBlock(p, b)) {
-            p->pos.x -= p->vel.x;
-            p->vel.x *= -1;
-            p->vel.x *= PARTICLE_BOUNCE_LOSS;
-            break;
+            switch (b->type) {
+            case 2 ... 4:
+                p->pos.x -= p->vel.x;
+                p->vel.x *= -1;
+                if (b->type == 3)
+                    p->vel.x *= BOUNCER_RESISTANCE;
+                else
+                    p->vel.x *= PARTICLE_BOUNCE_LOSS;
+                break;
+            case 5:
+                p->enabled = false;
+                return;
+            }
         }
     }
 
     p->pos.y += p->vel.y;
     for (size_t i = 0; i < BLOCK_MAX; i++) {
         b = &blocks[i];
-        if (!b->enabled)
+        if (b->type < 2)
             continue;
         if (particleCollidesWithBlock(p, b)) {
-            p->pos.y -= p->vel.y;
-            if (fabsf(p->vel.y) < 0.5)
-                p->vel.y *= PARTICLE_GLIDE_RESISTANCE;
-            else
-                p->vel.y *= PARTICLE_BOUNCE_LOSS;
-            p->vel.y *= -1;
-            if (fabs(p->vel.x) < PARTICLE_MIN_VELOCITY && fabs(p->vel.y) < PARTICLE_MIN_VELOCITY)
+            switch (b->type) {
+            case 2 ... 4:
+                p->pos.y -= p->vel.y;
+                if (fabsf(p->vel.y) < 4) {
+                    if (b->type == 4)
+                        p->vel.x *= SLIDER_RESISTANCE;
+                    else
+                        p->vel.x *= PARTICLE_GLIDE_RESISTANCE;
+                } else {
+                    if (b->type == 3)
+                        p->vel.y *= BOUNCER_RESISTANCE;
+                    else
+                        p->vel.y *= PARTICLE_BOUNCE_LOSS;
+                }
+                p->vel.y *= -1;
+                if (fabs(p->vel.x) < PARTICLE_MIN_VELOCITY && fabs(p->vel.y) < PARTICLE_MIN_VELOCITY)
+                    p->enabled = false;
+                break;
+            case 5:
                 p->enabled = false;
+                return;
+            }
             break;
         }
     }
@@ -113,6 +167,10 @@ void handleCollision(Particle* p)
 
 void tickParticle(Particle* p)
 {
+    if (outOfBounds(p->pos)) {
+        p->enabled = false;
+        return;
+    }
     p->tail[0] = p->pos;
 
     handleCollision(p);
@@ -125,7 +183,7 @@ void tickParticle(Particle* p)
     }
 }
 
-Particle* getFreeParticle()
+Particle* getFreeParticle(void)
 {
     for (size_t i = 0; i < PARTICLE_MAX; i++)
         if (!particles[i].enabled)
@@ -133,10 +191,10 @@ Particle* getFreeParticle()
     return NULL;
 }
 
-Block* getFreeBlock()
+Block* getFreeBlock(void)
 {
     for (size_t i = 0; i < BLOCK_MAX; i++)
-        if (!blocks[i].enabled)
+        if (blocks[i].type == 0)
             return &blocks[i];
     return NULL;
 }
@@ -153,12 +211,17 @@ Color getRandomColor(Color* original, double diversion)
     };
 }
 
-void drawBlock(Block* b)
+Vector2 getRandomVelocity(void)
 {
-    DrawRectangleRec(b->rect, BLACK);
+    return getRandomVector2(-PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY, -PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY);
 }
 
-void handleMouseClick()
+void drawBlock(Block* b)
+{
+    DrawRectangleRec(b->rect, BLOCK_COLORS[b->type]);
+}
+
+void handleMouseClick(void)
 {
     Vector2 pos = GetMousePosition();
     Block* b;
@@ -172,7 +235,12 @@ void handleMouseClick()
         printf("Out of particles\n");
         return;
     }
-    initParticle(p, pos, getRandomVector2(-PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY, -PARTICLE_INITIAL_VELOCITY, PARTICLE_INITIAL_VELOCITY), getRandomColor(NULL, 128));
+    initParticle(p, pos, getRandomVelocity(), getRandomColor(NULL, 128));
+}
+
+Vector2 getRectMiddle(Rectangle rect)
+{
+    return (Vector2) { rect.x + rect.width / 2, rect.y + rect.height / 2 };
 }
 
 void tick(void)
@@ -191,11 +259,15 @@ void tick(void)
     Block* b;
     for (size_t i = 0; i < BLOCK_MAX; i++) {
         b = &blocks[i];
-        if (!b->enabled)
+        if (b->type == 0)
             continue;
         drawBlock(b);
+        if (b->type == 1)
+            if (spawnerTimer % SPAWNER_FREQUENCY == 0)
+                initParticle(getFreeParticle(), getRectMiddle(b->rect), getRandomVelocity(), getRandomColor(NULL, 128));
     }
 }
+
 Rectangle rectangleFromVectors(Vector2 position, Vector2 size)
 {
     // ensure the size is always positive
@@ -212,55 +284,85 @@ Rectangle rectangleFromVectors(Vector2 position, Vector2 size)
     return (Rectangle) { position.x, position.y, size.x, size.y };
 }
 
+void UpdateDrawFrame(void)
+{
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        if (drawingBlock)
+            // Cancel drawing the block
+            drawingBlock = false;
+        handleMouseClick();
+    }
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+        blockStartPos = GetMousePosition();
+        drawingBlock = true;
+    }
+
+    if (drawingBlock) {
+        blockCurrentPos = GetMousePosition();
+        // Display the to be placed block
+        DrawRectangleRec(rectangleFromVectors(blockStartPos, Vector2Subtract(GetMousePosition(), blockStartPos)), BLOCK_COLORS[blockType]);
+    }
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) {
+        if (drawingBlock) {
+            *getFreeBlock() = (Block) { blockType, rectangleFromVectors(blockStartPos, Vector2Subtract(blockCurrentPos, blockStartPos)) };
+            drawingBlock = false;
+        }
+    }
+
+    if (IsKeyPressed(KEY_C)) {
+        // Clear all particles
+        for (size_t i = 0; i < PARTICLE_MAX; i++)
+            particles[i].enabled = false;
+    }
+
+    if (IsKeyPressed(KEY_RIGHT)) {
+        blockType++;
+        if (blockType >= BLOCK_TYPE_COUNT)
+            blockType = 1;
+    }
+    if (IsKeyPressed(KEY_LEFT)) {
+        if (blockType <= 1)
+            blockType = BLOCK_TYPE_COUNT - 1;
+        else
+            blockType--;
+    }
+
+    BeginDrawing();
+    ClearBackground(GRAY);
+    tick();
+    DrawFPS(10, 10);
+    snprintf(particleCountBuffer, sizeof(particleCountBuffer), "%zu", particleCount);
+    DrawText(particleCountBuffer, 10, 40, 20, DARKGREEN);
+    if (drawingBlock)
+        DrawText(BLOCK_NAMES[blockType], 10, 80, 20, DARKGREEN);
+    EndDrawing();
+    spawnerTimer++;
+}
+
 int main(void)
 {
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(X, Y, "Particles");
-    SetTargetFPS(FPS);
     SetRandomSeed(time(NULL));
 
-    Vector2 blockStartPos;
-    Vector2 blockCurrentPos;
-    bool drawingBlock = false;
-    char particleCountBuffer[20];
+    // Set all particles and blocks to disabled
+    for (size_t i = 0; i < PARTICLE_MAX; i++)
+        particles[i] = (Particle) { false };
+    for (size_t i = 0; i < BLOCK_MAX; i++)
+        blocks[i] = (Block) { 0 };
 
+#if defined(PLATFORM_WEB)
+    // Let the browser handle updates
+    emscripten_set_main_loop(UpdateDrawFrame, 0, 1);
+#else
+    SetTargetFPS(FPS);
     while (!WindowShouldClose()) {
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            if (drawingBlock)
-                drawingBlock = false;
-            handleMouseClick();
-        }
-
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-            blockStartPos = GetMousePosition();
-            drawingBlock = true;
-        }
-
-        if (drawingBlock) {
-            blockCurrentPos = GetMousePosition();
-            DrawRectangleRec(rectangleFromVectors(blockStartPos, Vector2Subtract(GetMousePosition(), blockStartPos)), BLACK);
-        }
-
-        if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) {
-            if (drawingBlock) {
-                *getFreeBlock() = (Block) { true, rectangleFromVectors(blockStartPos, Vector2Subtract(blockCurrentPos, blockStartPos)) };
-                drawingBlock = false;
-            }
-        }
-
-        if (IsKeyPressed(KEY_C)) {
-            for (size_t i = 0; i < PARTICLE_MAX; i++)
-                particles[i].enabled = false;
-        }
-
-        BeginDrawing();
-        ClearBackground(GRAY);
-        tick();
-        DrawFPS(10, 10);
-        snprintf(particleCountBuffer, sizeof(particleCountBuffer), "%" PRIuMAX, particleCount);
-        DrawText(particleCountBuffer, 10, 40, 20, DARKGREEN);
-        EndDrawing();
+        UpdateDrawFrame();
     }
+#endif
+
     CloseWindow();
     return EXIT_SUCCESS;
 }

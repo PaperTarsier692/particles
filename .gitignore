@@ -1,6 +1,7 @@
 output
 .DS_Store
-build/
+build/*
+!build/particles*
 .cache/
 gyroflip
 CMakeCache.txt
